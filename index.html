@@ -2048,9 +2048,10 @@ const PUTER_EN_OPTS = { provider: 'aws-polly', voice: 'Joanna', engine: 'neural'
 // konsisten & natural untuk SEMUA teks Indonesia (kata, frasa, maupun
 // kalimat), sekarang dan yang akan datang, tanpa perlu ubah teks tiap kali.
 const PUTER_ID_OPTS = {
-  provider: 'elevenlabs',
-  model: 'eleven_multilingual_v2',
-  voice: '21m00Tcm4TlvDq8ikWAM', // suara contoh publik "Rachel" - multibahasa
+  provider: 'gemini',
+  model: 'gemini-2.5-pro-preview-tts',
+  voice: 'Kore',
+  instructions: 'Ucapkan dengan logat Bahasa Indonesia asli yang jelas dan natural, bukan logat Inggris.',
 };
 
 // Frasa Inggris PENDEK tanpa tanda baca akhir (mis. "Get up", "Sit down",
