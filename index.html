@@ -225,16 +225,42 @@
       <div class="voice-note" id="genAllNote"></div>
       <div style="font-size:11px;color:#636e72;margin-top:10px">
         Kalau ada suara yang terlanjur salah/terpotong (mis. sudah dibuat SEBELUM
-        perbaikan kode terbaru), tombol "Buat Semua Suara" di atas TIDAK akan
-        membuat ulang otomatis (supaya suara yang sudah ada tidak dibuang percuma).
-        Tekan tombol di bawah ini untuk menghapus cache suara di HP/laptop INI
-        saja, lalu tekan "Buat Semua Suara Sekarang" lagi untuk membuat ulang
-        dengan perbaikan terbaru. Kalau file lama juga sudah pernah diunggah ke
-        folder audio/ di server, file lama di server itu perlu dihapus manual
-        juga supaya benar-benar tergantikan.
+        perbaikan kode terbaru, atau salah ucap dari mesin suara AI), tombol
+        "Buat Semua Suara" di atas TIDAK akan membuat ulang otomatis (supaya
+        suara yang sudah ada tidak dibuang percuma). Kalau HANYA SATU-DUA kata
+        yang salah ucap, pakai kotak "🔧 Perbaiki Satu Suara" di bawah ini saja
+        (lebih cepat). Kalau salahnya BANYAK/menyeluruh, tekan tombol di bawah
+        ini untuk menghapus SEMUA cache suara di HP/laptop INI, lalu tekan
+        "Buat Semua Suara Sekarang" lagi. Kalau file lama juga sudah pernah
+        diunggah ke folder audio/ di server, file lama di server itu perlu
+        dihapus manual juga supaya benar-benar tergantikan.
       </div>
       <button class="btn-download-voice" id="btnClearAudioCache" style="background:#d63031;width:100%;margin-top:6px">🗑️ Hapus Cache Suara di HP/Laptop Ini</button>
       <div class="voice-note" id="clearCacheNote"></div>
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #8fd6a3">
+        <div style="font-size:11px;font-weight:800;color:#00B894;margin-bottom:6px">🔧 PERBAIKI SATU SUARA YANG SALAH UCAP</div>
+        <div style="font-size:11px;color:#636e72;margin-bottom:8px">
+          Mesin suara AI untuk Bahasa Indonesia (Gemini) kadang salah ucap
+          kata/angka tertentu (mis. "tujuh" jadi "pujuh", "dua puluh dua" jadi
+          "dua puluh bua") walau TEKSNYA sendiri sudah benar - ini keterbatasan
+          mesin suaranya, bukan kesalahan teks. Kotak ini juga berguna untuk
+          kata yang GAGAL TOTAL (tidak menghasilkan suara sama sekali) saat
+          "Buat Semua Suara" - biasanya karena mesin suara sempat dibatasi
+          (rate limit) di tengah proses. Karena suara yang salah/gagal itu
+          tidak otomatis dibuat ulang oleh "Buat Semua Suara", ketik persis
+          kata/kalimat yang bermasalah di bawah ini, lalu tekan tombol "Buat
+          Ulang" - boleh ditekan berkali-kali (tiap percobaan hasilnya bisa
+          berbeda) sampai terdengar benar.
+        </div>
+        <textarea id="fixWordText" placeholder="Contoh: tujuh puluh dua" style="width:100%;height:44px;border-radius:12px;border:2px solid #dfe6e9;outline:none;padding:8px;font-size:14px;line-height:1.4;resize:none;background:#fafafa"></textarea>
+        <select id="fixWordLang" style="width:100%;margin-top:8px;border-radius:10px;border:2px solid #dfe6e9;padding:8px;font-size:13px;font-weight:700;background:#fff">
+          <option value="id">🇮🇩 Bahasa Indonesia</option>
+          <option value="en">🇬🇧 English</option>
+        </select>
+        <button class="btn-download-voice" id="btnFixOneVoice" style="background:#0984E3;width:100%;margin-top:8px">🔁 Buat Ulang &amp; Putar Suara Ini</button>
+        <div class="voice-note" id="fixWordNote"></div>
+      </div>
     </div>
   </div>
 
@@ -430,6 +456,16 @@ const AudioCache = (() => {
       } catch { return []; }
     },
     async getDbHandle() { return await getDb(); },
+    async delete(key) {
+      try {
+        const db = await getDb();
+        await new Promise((resolve) => {
+          const tx = db.transaction('clips', 'readwrite').objectStore('clips').delete(key);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch { /* abaikan kegagalan hapus, tidak fatal */ }
+    },
     async clearAllClips() {
       try {
         const db = await getDb();
@@ -2592,21 +2628,26 @@ function sourceLabel(s) {
 // ---------------------------------------------------------------------
 async function generateAudioForBundle(text, lang) {
   // Sama seperti di speak(): kegagalan sesaat dari mesin suara AI sering
-  // berhasil kalau dicoba lagi tanpa mengubah apa pun - coba ulang 1x
-  // otomatis sebelum benar-benar menyerah untuk item ini.
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // berhasil kalau dicoba lagi tanpa mengubah apa pun - coba ulang otomatis
+  // sampai 3x (jeda antar percobaan makin lama) sebelum benar-benar
+  // menyerah untuk item ini. Jeda yang membesar ini penting kalau
+  // penyebabnya bukan gangguan sesaat, tapi mesin suara sedang dibatasi
+  // (rate limit) karena banyak permintaan beruntun - percobaan ulang yang
+  // terlalu cepat justru tetap kena batas yang sama.
+  const ATTEMPT_DELAYS_MS = [500, 1500, 3000];
+  for (let attempt = 1; attempt <= ATTEMPT_DELAYS_MS.length + 1; attempt++) {
     try {
       const audio = await withTimeout(synthesizeWithPuter(text, lang), 15000, 'sintesis');
       const res = await withTimeout(fetch(audio.src), 15000, 'ambil-bytes');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.blob();
     } catch (err) {
-      if (attempt === 2) {
+      if (attempt > ATTEMPT_DELAYS_MS.length) {
         console.warn('Gagal membuat suara untuk ditanam:', err);
         return null;
       }
-      console.warn(`Gagal membuat suara (percobaan ${attempt}/2), coba lagi...`, err);
-      await new Promise((r) => setTimeout(r, 500));
+      console.warn(`Gagal membuat suara (percobaan ${attempt}/${ATTEMPT_DELAYS_MS.length + 1}), coba lagi...`, err);
+      await new Promise((r) => setTimeout(r, ATTEMPT_DELAYS_MS[attempt - 1]));
     }
   }
 }
@@ -2669,6 +2710,13 @@ async function generateAllAudio() {
 
   const list = [...items.values()];
   let done = 0, failed = 0, skippedExisting = 0;
+  const failedItems = []; // supaya guru tahu PERSIS teks mana yang gagal, tidak perlu menebak
+  // Jeda antar item: makin sering gagal BERTURUT-TURUT, makin lama jedanya
+  // sebelum lanjut ke item berikutnya - tanda paling mungkin adalah mesin
+  // suara sedang dibatasi (rate limit) karena permintaan terlalu beruntun,
+  // jadi memperlambat laju kirim lebih membantu daripada terus menerjang
+  // dengan kecepatan yang sama. Jeda kembali pendek begitu ada yang berhasil.
+  let consecutiveFails = 0;
   for (const { text, lang } of list) {
     const key = cacheKeyFor(text, lang);
 
@@ -2692,25 +2740,40 @@ async function generateAllAudio() {
     }
 
     $('genAllNote').textContent = `Memproses ${done + 1}/${list.length}: "${text.slice(0, 40)}" (${lang})...`;
+    let itemFailed = false;
     try {
       await withTimeout((async () => {
         const blob = await generateAudioForBundle(text, lang);
         if (blob) await AudioCache.set(key, blob);
-        else failed++;
-      })(), 20000, 'item-keseluruhan');
+        else itemFailed = true;
+      })(), 25000, 'item-keseluruhan');
     } catch (err) {
-      failed++;
+      itemFailed = true;
       console.warn('Item gagal/timeout (pengaman luar):', text, err);
+    }
+    if (itemFailed) {
+      failed++;
+      failedItems.push(`${text} (${lang})`);
+      consecutiveFails++;
+    } else {
+      consecutiveFails = 0;
     }
     done++;
     $('genAllProgressInner').style.width = Math.round((done / list.length) * 100) + '%';
-    await sleep(30);
+    // Jeda dasar antar item + jeda tambahan kalau sedang beruntun gagal
+    // (naik bertahap, dibatasi maksimum 4 detik supaya proses tetap
+    // berjalan wajar untuk daftar kata/kalimat yang panjang).
+    const extraBackoff = Math.min(consecutiveFails * 800, 4000);
+    await sleep(150 + extraBackoff);
   }
 
   const skipNote = skippedExisting > 0 ? ` (${skippedExisting} sudah ada dari sebelumnya, dilewati - tidak dibuat ulang)` : '';
-  $('genAllNote').textContent = failed === 0
-    ? `✅ Selesai! ${done} suara siap${skipNote}. Sekarang tekan "⬇️ DOWNLOAD APLIKASI" di bagian bawah untuk mengunduh paket (index.html + folder audio baru).`
-    : `⚠️ Selesai, ${done - failed} dari ${done} berhasil dibuat${skipNote}. ${failed} gagal — tekan "Buat Semua Suara" sekali lagi untuk mencoba yang gagal saja.`;
+  if (failed === 0) {
+    $('genAllNote').textContent = `✅ Selesai! ${done} suara siap${skipNote}. Sekarang tekan "⬇️ DOWNLOAD APLIKASI" di bagian bawah untuk mengunduh paket (index.html + folder audio baru).`;
+  } else {
+    const daftarGagal = failedItems.slice(0, 30).join(', ') + (failedItems.length > 30 ? `, dan ${failedItems.length - 30} lainnya` : '');
+    $('genAllNote').innerHTML = `⚠️ Selesai, ${done - failed} dari ${done} berhasil dibuat${skipNote}. ${failed} gagal — tekan "Buat Semua Suara" sekali lagi untuk mencoba yang gagal saja (kegagalan bertumpuk seperti ini biasanya karena mesin suara sedang dibatasi/rate limit, bukan masalah teksnya).<br><br><b>Yang gagal:</b> ${escapeHtml(daftarGagal)}<br><br>Kalau setelah dicoba ulang beberapa kali masih ada satu-dua yang tetap gagal, salin teksnya ke kotak "🔧 Perbaiki Satu Suara" di atas untuk dicoba satu per satu.`;
+  }
   btn.disabled = false;
   $('genAllProgressOuter').style.display = 'none';
 }
@@ -2909,6 +2972,52 @@ $('btnClearAudioCache').addEventListener('click', async () => {
     ? '✅ Cache suara di perangkat ini sudah bersih. Tekan "Buat Semua Suara Sekarang" untuk membuat ulang dengan perbaikan terbaru.'
     : '❌ Gagal menghapus cache. Coba lagi.';
 });
+
+// ---------------------------------------------------------------------
+// KHUSUS GURU: PERBAIKI SATU SUARA YANG SALAH UCAP
+// ---------------------------------------------------------------------
+// Berbeda dari "Buat Semua Suara" (yang melewati apa pun yang sudah ada di
+// cache/server, benar atau salah) - tombol ini SENGAJA menghapus dulu entri
+// cache lokal untuk teks tsb, lalu memaksa mesin suara membuat versi baru
+// dan langsung memutarnya supaya guru bisa dengar & menilai. Boleh ditekan
+// berkali-kali karena mesin suara AI generatif bisa memberi hasil berbeda
+// tiap kali diminta, walau teks masukannya persis sama.
+$('btnFixOneVoice').addEventListener('click', async () => {
+  const btn = $('btnFixOneVoice');
+  const note = $('fixWordNote');
+  const rawText = $('fixWordText').value.trim();
+  const lang = $('fixWordLang').value;
+  if (!rawText) { note.textContent = 'Ketik dulu kata/kalimat yang mau dibuat ulang suaranya.'; return; }
+  if (!window.puter?.ai?.txt2speech) { note.textContent = '⚠️ Mesin suara belum termuat - periksa koneksi internet lalu muat ulang halaman.'; return; }
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Membuat ulang...';
+  note.textContent = '';
+  try {
+    // Sama seperti speak()/generateAllAudio(): terapkan dulu aturan
+    // pembacaan angka/format khusus sebelum dikirim ke mesin suara, supaya
+    // kunci cache yang dipakai/ditimpa PERSIS sama dengan yang dipakai saat
+    // pemutaran biasa (kalau tidak, suara baru ini tidak akan pernah
+    // terpakai lagi karena kuncinya beda).
+    const text = applySpeechNumberRules(rawText, lang);
+    const key = cacheKeyFor(text, lang);
+    await AudioCache.delete(key); // buang versi lama (salah) di HP ini dulu
+    const audio = await withTimeout(synthesizeWithPuter(text, lang), 15000, 'sintesis');
+    btn.textContent = '🔊 Memutar...';
+    await playAudioElement(audio, 1, () => false);
+    const res = await fetch(audio.src);
+    const blob = await res.blob();
+    await AudioCache.set(key, blob);
+    note.innerHTML = `✅ Suara baru sudah disimpan di HP/laptop ini. Kalau masih salah, tekan tombol ini lagi (hasilnya bisa berbeda tiap dicoba).<br>Kalau kata ini SUDAH PERNAH diunggah ke folder <code>audio/</code> di server, file lama <code>${key}.mp3</code> di server itu perlu dihapus/diganti manual juga - kalau tidak, versi lama yang salah itu yang akan tetap dipakai (lihat fetchRemoteAudio: file server diprioritaskan).`;
+  } catch (err) {
+    console.error(err);
+    note.textContent = '❌ Gagal membuat ulang: ' + (err?.message || err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+});
+
 $('btnGenerateAll').addEventListener('click', async () => {
   // Pastikan login DULU, dipicu langsung oleh klik tombol ini (bukan di
   // tengah proses otomatis) - supaya pop-up login tidak diblokir browser.
