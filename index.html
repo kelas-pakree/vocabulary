@@ -259,6 +259,7 @@
           <option value="en">🇬🇧 English</option>
         </select>
         <button class="btn-download-voice" id="btnFixOneVoice" style="background:#0984E3;width:100%;margin-top:8px">🔁 Buat Ulang &amp; Putar Suara Ini</button>
+        <button id="btnCancelFixVoice" style="display:none;width:100%;margin-top:6px;height:34px;border-radius:999px;background:#fff;color:#d63031;border:2px solid #d63031;font-weight:800;font-size:12px">❌ Batalkan</button>
         <div class="voice-note" id="fixWordNote"></div>
       </div>
     </div>
@@ -2982,26 +2983,51 @@ $('btnClearAudioCache').addEventListener('click', async () => {
 // dan langsung memutarnya supaya guru bisa dengar & menilai. Boleh ditekan
 // berkali-kali karena mesin suara AI generatif bisa memberi hasil berbeda
 // tiap kali diminta, walau teks masukannya persis sama.
+//
+// "fixVoiceRequestId" adalah PENGAMAN TERAKHIR kalau batas waktu
+// (withTimeout) di dalam saja ternyata tidak cukup - misalnya kalau
+// pustaka mesin suara pihak ketiga (Puter.js) sendiri yang macet menunggu
+// sesuatu di baliknya (mis. proses masuk/otorisasi) sehingga PROMISE-nya
+// sendiri tidak pernah selesai maupun gagal. Karena kita tidak bisa
+// memaksa berhenti promise pihak ketiga begitu saja, cara paling jujur
+// adalah: beri tombol Batal yang langsung menandai permintaan itu sebagai
+// "basi" (stale) - begitu proses lama akhirnya selesai (kalaupun iya),
+// hasilnya diabaikan karena nomornya sudah tidak cocok lagi, dan guru
+// sudah bisa mulai lagi dari awal tanpa menunggu.
+let fixVoiceRequestId = 0;
+$('btnCancelFixVoice').addEventListener('click', () => {
+  fixVoiceRequestId++; // tandai semua permintaan yang sedang berjalan sebagai basi
+  clearInterval(window.__fixVoiceTicker);
+  $('btnFixOneVoice').disabled = false;
+  $('btnFixOneVoice').textContent = '🔁 Buat Ulang & Putar Suara Ini';
+  $('btnCancelFixVoice').style.display = 'none';
+  $('fixWordNote').textContent = '⏹️ Dibatalkan. Kalau proses lama ternyata masih berjalan di baliknya, hasilnya akan diabaikan begitu selesai. Coba tekan "Buat Ulang" lagi - atau login dulu ke Puter (tombol 🔑 di atas) kalau ini sering macet, karena akun tanpa login jatahnya lebih kecil dan lebih rawan macet/menunggu.';
+});
 $('btnFixOneVoice').addEventListener('click', async () => {
   const btn = $('btnFixOneVoice');
   const note = $('fixWordNote');
+  const cancelBtn = $('btnCancelFixVoice');
   const rawText = $('fixWordText').value.trim();
   const lang = $('fixWordLang').value;
   if (!rawText) { note.textContent = 'Ketik dulu kata/kalimat yang mau dibuat ulang suaranya.'; return; }
   if (!window.puter?.ai?.txt2speech) { note.textContent = '⚠️ Mesin suara belum termuat - periksa koneksi internet lalu muat ulang halaman.'; return; }
   const originalLabel = btn.textContent;
+  const myRequestId = ++fixVoiceRequestId; // nomor unik untuk percobaan KALI INI
+  const isStale = () => myRequestId !== fixVoiceRequestId;
   btn.disabled = true;
+  cancelBtn.style.display = 'block';
   note.textContent = '';
 
   // Penghitung detik yang TERLIHAT - supaya guru tahu proses masih berjalan
   // (bukan macet), dan supaya jelas kapan seharusnya berhenti menunggu kalau
-  // ternyata memang tidak bergerak.
+  // ternyata memang tidak bergerak (dan kapan sebaiknya menekan Batal).
   let seconds = 0;
   btn.textContent = '⏳ Membuat ulang... (0 dtk)';
   const ticker = setInterval(() => {
     seconds++;
-    btn.textContent = `⏳ Membuat ulang... (${seconds} dtk)`;
+    btn.textContent = `⏳ Membuat ulang... (${seconds} dtk) — macet? tekan Batal`;
   }, 1000);
+  window.__fixVoiceTicker = ticker; // supaya bisa dihentikan dari tombol Batal juga
 
   try {
     // Sama seperti speak()/generateAllAudio(): terapkan dulu aturan
@@ -3012,33 +3038,45 @@ $('btnFixOneVoice').addEventListener('click', async () => {
     const text = applySpeechNumberRules(rawText, lang);
     const key = cacheKeyFor(text, lang);
     await AudioCache.delete(key); // buang versi lama (salah) di HP ini dulu
+    if (isStale()) return; // dibatalkan atau ditekan ulang selagi menghapus cache
 
     // SELURUH proses (sintesis + ambil bytes) dibatasi TEGAS 20 detik total,
-    // apa pun penyebab lambatnya di sisi mesin suara/jaringan - sebelumnya
-    // langkah "ambil bytes" di sini tidak dibatasi sama sekali, itu yang
-    // membuat tombol bisa menggantung tanpa jelas kapan berhentinya.
+    // apa pun penyebab lambatnya di sisi mesin suara/jaringan. Catatan:
+    // batas ini hanya menyelamatkan KODE KITA supaya lanjut ke item
+    // berikutnya - kalau pustaka Puter.js sendiri yang benar-benar macet
+    // (bukan sekadar lambat), promise aslinya bisa saja tetap menggantung
+    // di baliknya; itu sebabnya tombol Batal di atas tetap disediakan
+    // sebagai jalan keluar terakhir yang pasti bekerja.
     const blob = await withTimeout((async () => {
       const audio = await synthesizeWithPuter(text, lang);
       const res = await fetch(audio.src);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.blob();
     })(), 20000, 'buat-suara');
+    if (isStale()) return; // dibatalkan/ditekan ulang selagi menunggu mesin suara
 
     await AudioCache.set(key, blob); // simpan DULU - kalau pemutaran di bawah gagal/lambat, suara baru tetap tidak hilang
+    if (isStale()) return;
     clearInterval(ticker);
     btn.textContent = '🔊 Memutar...';
     const url = URL.createObjectURL(blob);
-    await playAudioElement(new Audio(url), 1, () => false); // failsafe internal maks. 12 detik
+    await playAudioElement(new Audio(url), 1, isStale); // failsafe internal maks. 12 detik
     URL.revokeObjectURL(url);
+    if (isStale()) return;
 
     note.innerHTML = `✅ Suara baru sudah disimpan di HP/laptop ini. Kalau masih salah, tekan tombol ini lagi (hasilnya bisa berbeda tiap dicoba).<br>Kalau kata ini SUDAH PERNAH diunggah ke folder <code>audio/</code> di server, file lama <code>${key}.mp3</code> di server itu perlu dihapus/diganti manual juga - kalau tidak, versi lama yang salah itu yang akan tetap dipakai (lihat fetchRemoteAudio: file server diprioritaskan).`;
   } catch (err) {
+    if (isStale()) return; // sudah dibatalkan - jangan timpa pesan "Dibatalkan" dengan pesan error basi
     console.error(err);
-    note.textContent = `❌ Gagal setelah ${seconds} detik: ${err?.message || err}. Coba tekan tombol ini sekali lagi.`;
+    const loginHint = window.puter?.auth?.isSignedIn?.() ? '' : ' Coba login dulu ke Puter (tombol 🔑 di atas) - tanpa login jatahnya lebih kecil dan lebih rawan macet/gagal.';
+    note.textContent = `❌ Gagal setelah ${seconds} detik: ${err?.message || err}. Coba tekan tombol ini sekali lagi.${loginHint}`;
   } finally {
-    clearInterval(ticker);
-    btn.disabled = false;
-    btn.textContent = originalLabel;
+    if (!isStale()) {
+      clearInterval(ticker);
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+      cancelBtn.style.display = 'none';
+    }
   }
 });
 
