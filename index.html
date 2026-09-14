@@ -2991,8 +2991,18 @@ $('btnFixOneVoice').addEventListener('click', async () => {
   if (!window.puter?.ai?.txt2speech) { note.textContent = '⚠️ Mesin suara belum termuat - periksa koneksi internet lalu muat ulang halaman.'; return; }
   const originalLabel = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '⏳ Membuat ulang...';
   note.textContent = '';
+
+  // Penghitung detik yang TERLIHAT - supaya guru tahu proses masih berjalan
+  // (bukan macet), dan supaya jelas kapan seharusnya berhenti menunggu kalau
+  // ternyata memang tidak bergerak.
+  let seconds = 0;
+  btn.textContent = '⏳ Membuat ulang... (0 dtk)';
+  const ticker = setInterval(() => {
+    seconds++;
+    btn.textContent = `⏳ Membuat ulang... (${seconds} dtk)`;
+  }, 1000);
+
   try {
     // Sama seperti speak()/generateAllAudio(): terapkan dulu aturan
     // pembacaan angka/format khusus sebelum dikirim ke mesin suara, supaya
@@ -3002,17 +3012,31 @@ $('btnFixOneVoice').addEventListener('click', async () => {
     const text = applySpeechNumberRules(rawText, lang);
     const key = cacheKeyFor(text, lang);
     await AudioCache.delete(key); // buang versi lama (salah) di HP ini dulu
-    const audio = await withTimeout(synthesizeWithPuter(text, lang), 15000, 'sintesis');
+
+    // SELURUH proses (sintesis + ambil bytes) dibatasi TEGAS 20 detik total,
+    // apa pun penyebab lambatnya di sisi mesin suara/jaringan - sebelumnya
+    // langkah "ambil bytes" di sini tidak dibatasi sama sekali, itu yang
+    // membuat tombol bisa menggantung tanpa jelas kapan berhentinya.
+    const blob = await withTimeout((async () => {
+      const audio = await synthesizeWithPuter(text, lang);
+      const res = await fetch(audio.src);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.blob();
+    })(), 20000, 'buat-suara');
+
+    await AudioCache.set(key, blob); // simpan DULU - kalau pemutaran di bawah gagal/lambat, suara baru tetap tidak hilang
+    clearInterval(ticker);
     btn.textContent = '🔊 Memutar...';
-    await playAudioElement(audio, 1, () => false);
-    const res = await fetch(audio.src);
-    const blob = await res.blob();
-    await AudioCache.set(key, blob);
+    const url = URL.createObjectURL(blob);
+    await playAudioElement(new Audio(url), 1, () => false); // failsafe internal maks. 12 detik
+    URL.revokeObjectURL(url);
+
     note.innerHTML = `✅ Suara baru sudah disimpan di HP/laptop ini. Kalau masih salah, tekan tombol ini lagi (hasilnya bisa berbeda tiap dicoba).<br>Kalau kata ini SUDAH PERNAH diunggah ke folder <code>audio/</code> di server, file lama <code>${key}.mp3</code> di server itu perlu dihapus/diganti manual juga - kalau tidak, versi lama yang salah itu yang akan tetap dipakai (lihat fetchRemoteAudio: file server diprioritaskan).`;
   } catch (err) {
     console.error(err);
-    note.textContent = '❌ Gagal membuat ulang: ' + (err?.message || err);
+    note.textContent = `❌ Gagal setelah ${seconds} detik: ${err?.message || err}. Coba tekan tombol ini sekali lagi.`;
   } finally {
+    clearInterval(ticker);
     btn.disabled = false;
     btn.textContent = originalLabel;
   }
