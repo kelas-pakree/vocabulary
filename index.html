@@ -1521,6 +1521,9 @@ const PHRASE_DICTIONARY_EN_ID = {
   'ninety eight': 'sembilan puluh delapan',
   'ninety nine': 'sembilan puluh sembilan',
   'one hundred': 'seratus',
+  // Makanan
+  'fried chicken': 'ayam goreng',
+  'fried fish': 'ikan goreng',
 };
 // Panjang frasa terpanjang dalam kamus (dalam jumlah kata), dipakai
 // untuk membatasi seberapa jauh pencarian frasa per posisi kata.
@@ -2047,14 +2050,11 @@ const PUTER_EN_OPTS = { provider: 'aws-polly', voice: 'Joanna', engine: 'neural'
 // memengaruhi GAYA bicaranya. Ini yang membuat logat Indonesia lebih
 // konsisten & natural untuk SEMUA teks Indonesia (kata, frasa, maupun
 // kalimat), sekarang dan yang akan datang, tanpa perlu ubah teks tiap kali.
-// "Nilasari" - suara ElevenLabs berbahasa Indonesia asli yang secara
-// resmi dideskripsikan cocok untuk konten EDUKASI (artikulasi jelas,
-// nada natural) - dipilih khusus untuk audio pembelajaran siswa SD/MI,
-// bukan sekadar suara narasi/berita biasa.
 const PUTER_ID_OPTS = {
-  provider: 'elevenlabs',
-  model: 'eleven_multilingual_v2',
-  voice: 'NPDHDOOQCSyifTJZOe6J', // Nilasari
+  provider: 'gemini',
+  model: 'gemini-2.5-flash-preview-tts',
+  voice: 'Kore',
+  instructions: 'Ucapkan dengan logat Bahasa Indonesia asli yang jelas dan natural, bukan logat Inggris.',
 };
 
 // Frasa Inggris PENDEK tanpa tanda baca akhir (mis. "Get up", "Sit down",
